@@ -11,6 +11,7 @@ import socketserver
 import seaborn as sns
 import pandas as pd
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
 
 pd.set_option('display.max_columns', None)
@@ -355,6 +356,110 @@ class UserHistory:
         return user_genre_preference_dataframe.index.tolist()
 
 
+class Algorithm:
+    def __init__(self):
+        print('演算法已建立')
+
+    def user_based_collaborative_fillter(self, user_ratings, target_user, num_recommend, n_similar_users=60,
+                                         similarity_threshold=0.5):
+        # 基於用戶的協同過濾，推薦給target_user的商品
+        # 1. 找到和target_user最相似的k個用戶
+        print('正在尋找與用戶 {:d} 最相似的 {:d} 位用戶...'.format(target_user, n_similar_users))
+        similar_users = self.top_k_similar_users(user_ratings, target_user, n_similar_users, similarity_threshold)
+
+        if similar_users is None or len(similar_users) == 0:
+            print('找不到與用戶 {:d} 最相似的用戶'.format(target_user))
+            return pd.DataFrame()  # 回傳空的DataFrame，代表找不到推薦的商品
+
+        # 2. 找到target_user沒看過的商品
+        print('正在尋找用戶 {:d} 沒看過的商品...'.format(target_user))
+        items_to_recommend = self.unseen_items(user_ratings, target_user)
+
+        # 3. 找到和target_user最相似的k個用戶對這些商品的評分
+        print('正在尋找與用戶 {:d} 最相似的 {:d} 位用戶對這些電影的評分...'.format(target_user, n_similar_users))
+        similar_users_ratings = user_ratings.loc[user_ratings['reviewerID'].isin(similar_users.index), :]
+        similar_users_ratings = similar_users_ratings.loc[similar_users_ratings['asin'].isin(items_to_recommend), :]
+
+        # 4.1. 進行評分的正規化，先計算該用戶平均評分
+        similar_users_ratings['user_mean'] = similar_users_ratings.groupby('reviewerID')['asin'].transform('mean')
+        # 4.2. 評分減去該用戶平均評分，獲得每個用戶對商品的超額給分
+        similar_users_ratings['rating'] = similar_users_ratings['overall'] - similar_users_ratings['user_mean']
+        # 4.3. 移除用不到的欄位
+        similar_users_ratings.drop(columns=['user_mean'], inplace=True)
+
+        # 5. 用這些用戶與target_user的相似度，對於商品評分加權
+        similar_users_ratings = similar_users_ratings.merge(similar_users, left_on='reviewerID', right_index=True)
+        similar_users_ratings['weighted_rating'] = similar_users_ratings['overall'] * similar_users_ratings['similarity']
+
+        # 6. 取得商品的加權平均分
+        item_ratings = similar_users_ratings.groupby('asin')['weighted_rating'].sum() / \
+                       similar_users_ratings.groupby('asin')['similarity'].sum()
+
+        # 7. 排序，分數高的在前面
+        item_ratings = item_ratings.sort_values(ascending=False)
+
+        # 8. 回傳推薦結果，index是商品的asin，value是商品的推薦分數
+        return item_ratings[:num_recommend]
+
+    def user_similarity(self, user_ratings):
+        # 本函式的目的是計算用戶之間的相似度，基於用戶的協同過濾會用到
+        # 計算用戶相似度的方法有很多，這裡使用的是Pearson correlation coefficient
+        # 這裡的user_ratings是一個DataFrame，有3個欄位，分別是reviewerID, asin, overall
+        # 這裡的reviewerID是用戶的id，asin是商品的id，overall是用戶對商品的評分
+        rating_matrix = user_ratings.pivot(index='reviewierID', columns='asin', values='overall')
+
+        # 計算用戶相似度前，先將每個用戶的評分減去評分的平均值
+        rating_matrix = rating_matrix.subtract(rating_matrix.mean(axis=1), axis='rows')
+
+        # 轉置矩陣，把每個用戶的評分變成直行，再對每個直行兩兩之間計算 Pearson correlation
+        # 也可以用scipy.stats.pearsonr，例如計算編號0和編號3的用戶就用pearsonr(df.loc[0], df.loc[3])
+        user_similarity_pearson = rating_matrix.T.corr(method='pearson')
+
+        return user_similarity_pearson
+
+    def item_similarity(self, user_ratings):
+        rating_matrix = user_ratings.pivot(index='asin', columns='reviewierID', values='overall')
+        item_similarity = cosine_similarity(rating_matrix)
+        item_similarity[np.isnan(item_similarity)] = 0
+
+        return item_similarity
+
+    def top_k_similar_users(self, user_ratings, target_user, k, similarity_threshold=0.3):
+        # 本函式的目的是找出和target_user最相似的k個用戶，基於用戶的協同過濾會用到
+
+        # 計算用戶相似度
+        user_similarity = self.user_similarity(user_ratings)
+
+        if target_user not in user_similarity.index:
+            print('用戶 {:d} 目前沒有評分紀錄，無法找到與其最相似的用戶'.format(target_user))
+            return None
+
+        # 移除自己這一列，要找的是鄰居，不是自己
+        user_similarity.drop(index=target_user, inplace=True)
+
+        # 選擇在user_id這一行的相似度分數高於閥值的所有用戶列們(他們和target_user的相似度高於閥值)
+        threshold_selector = user_similarity.loc[:, target_user] > similarity_threshold
+        similar_users = user_similarity.loc[threshold_selector, target_user]  # 把他們和target_user的相似度挑出來(搭配他們的index)
+
+        # 將相似度Series的名稱改成similarity
+        similar_users.rename('similarity', inplace=True)
+
+        # 排序，相似度高的在前面，只取前k個相似度最大的用戶
+        similar_users = similar_users.sort_values(ascending=False)
+        similar_users = similar_users[:k]
+
+        # 回傳相似度最高的k個用戶，index是這些用戶的userId，value是這些用戶和target_user的相似度
+        return similar_users
+
+    def unseen_items(self, user_ratings, target_user):
+        # 找出target_user沒看過的物品，只能從這些物品推薦
+
+        target_user_ratings = user_ratings.loc[user_ratings['reviewerID'] == target_user, ['asin', 'overall']]
+        target_user_watched_items = target_user_ratings['asin'].tolist()
+        selector = ~user_ratings['asin'].isin(target_user_watched_items)
+        items_to_recommend = user_ratings.loc[selector, 'asin'].unique()
+        return items_to_recommend
+
 class RecommenderSim:
     def __init__(self, num_recommend=20):
         print('啟動推薦系統模擬器。')
@@ -364,6 +469,7 @@ class RecommenderSim:
 
         self.user_history = UserHistory()  # 使用者評分紀錄，以當前用戶身分進行新增、查詢、修改
         self.item_database = ItemDatabase()  # 物品資料庫，唯讀
+        self.algorithm = Algorithm()
 
         self.user_history.purge_ratings_for_unlisted_product(self.item_database)  # 清除資料庫中沒有的電影評分
 
@@ -379,7 +485,13 @@ class RecommenderSim:
 
         if method == 'user_based':
             print('使用基於用戶的協同過濾推薦物品')
-            self.last_recommendation = Algorithm.user_based_collaborative_filtering(
+            self.last_recommendation = self.algorithm.user_based_collaborative_fillter(
+                self.user_history.user_ratings, self.user_history.user_id, self.num_recommend)
+            self.last_recommendation = self.item_database.get_product_by_id_list(self.last_recommendation.index)
+
+        if method == 'item_based':
+            print('使用基於物品的協同過濾推薦物品')
+            self.last_recommendation == self.algorithm.item__based_collaborative_fillter(
                 self.user_history.user_ratings, self.user_history.user_id, self.num_recommend)
             self.last_recommendation = self.item_database.get_product_by_id_list(self.last_recommendation.index)
 
@@ -389,44 +501,45 @@ class RecommenderSim:
                 self.user_history.user_ratings, self.user_history.user_id, self.num_recommend)
             self.last_recommendation = self.item_database.get_product_by_id_list(self.last_recommendation.index)
 
-    def show_items(self, k_favorite=20):
-        # 取得用戶對於不同電影類型的偏好，並將結果儲存到 genre_preference 變數中，該變數為一個字典，其中的鍵為電影類型，值為偏好
-        genre_preference = rec.user_history.get_user_genre_preference(rec.item_database)
+    #def show_items(self, k_favorite=20):
+        # 取得用戶對於不同商品類型的偏好，並將結果儲存到 genre_preference 變數中，該變數為一個字典，其中的鍵為電影類型，值為偏好
+        # 商品類型還沒分類出來
+        #genre_preference = rec.user_history.get_user_genre_preference(rec.item_database)
         # 將 genre_preference 變數中的商品類型依照偏好由大到小排序
-        genre_preference = sorted(genre_preference.items(), key=lambda x: x[1], reverse=True)
-        print('你最喜歡的電影類型是:')
-        print('電影類型 偏好')
-        print('-' * 60)
-        for genre, preference in genre_preference:
-            print(genre, '{:.0%}'.format(preference))
-        print('-' * 60)
+        #genre_preference = sorted(genre_preference.items(), key=lambda x: x[1], reverse=True)
+        #print('你最喜歡的電影類型是:')
+        #print('電影類型 偏好')
+        #print('-' * 60)
+        #for genre, preference in genre_preference:
+        #    print(genre, '{:.0%}'.format(preference))
+        #print('-' * 60)
 
         # 基於推薦清單，以適當形式呈現給用戶，如果用戶對該物品有評分，一併顯示
-        print('你最喜歡的物品是:')
-        print('編號 評分 物品標題')
+        #print('你最喜歡的物品是:')
+        #print('編號 評分 物品標題')
 
         # 依照用戶的評分排序，評分高的在前面，取得用戶最喜歡的前k個物品
-        favorite_asin = self.user_history.get_top_rated_items(k_favorite)
-        favorite_items = self.item_database.get_product_by_id_list(favorite_asin)
+        #favorite_asin = self.user_history.get_top_rated_items(k_favorite)
+        #favorite_items = self.item_database.get_product_by_id_list(favorite_asin)
 
         # 顯示用戶最喜歡的物品
-        print('-' * 60)
-        for serial, item in enumerate(favorite_items):
-            rating = self.user_history.get_user_rating(item)
-            rating = '[?.?]' if rating is None else '[{:.1f}]'.format(rating)
-            print('{:d}.'.format(serial), rating, item['title'], item['asin'])
-        print('-' * 60)
+        #print('-' * 60)
+        #for serial, item in enumerate(favorite_items):
+        #    rating = self.user_history.get_user_rating(item)
+        #    rating = '[?.?]' if rating is None else '[{:.1f}]'.format(rating)
+        #    print('{:d}.'.format(serial), rating, item['title'], item['asin'])
+        #print('-' * 60)
 
-        print('推薦以下物品給你:')
-        print('編號 評分 物品標題')
+        #print('推薦以下物品給你:')
+        #print('編號 評分 物品標題')
 
         # 顯示推薦清單
-        print('-' * 60)
-        for serial, item in enumerate(self.last_recommendation):
-            rating = self.user_history.get_user_rating(item)
-            rating = '[?.?]' if rating is None else '[{:.1f}]'.format(rating)
-            print('{:d}.'.format(serial), rating, item['title'], item['asin'])
-        print('-' * 60)
+        #print('-' * 60)
+        #for serial, item in enumerate(self.last_recommendation):
+        #    rating = self.user_history.get_user_rating(item)
+        #    rating = '[?.?]' if rating is None else '[{:.1f}]'.format(rating)
+        #    print('{:d}.'.format(serial), rating, item['title'], item['asin'])
+        #print('-' * 60)
 
     def get_user_feedback(self):
         # 反覆詢問並檢查使用者對於物品的評分回應
