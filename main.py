@@ -1,163 +1,133 @@
-# Copyright 2023 Linjiun Tsai
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# This is a sample Python script.
+
+# Press Shift+F10 to execute it or replace it with your code.
+# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+
+
 import http.server
 import math
 import os
 import socketserver
-import zipfile
-
-import matplotlib.pyplot as plt
-import pandas as pd
 import seaborn as sns
+import pandas as pd
+import numpy as np
+
 
 pd.set_option('display.max_columns', None)
 pd.set_option('max_colwidth', 40)
 pd.set_option('display.width', 300)
 
-
 class Config:
-    PATH_DATA = r'..\Dataset'
-    FN_AGGR_MOVIE_INFO = os.path.join(PATH_DATA, 'movie_info_aggregated.csv')  # 聚合後的電影資料
-    FN_MOVIELENS_DATA = os.path.join(PATH_DATA, 'movielens_dataset.zip')  # MovieLens 原始資料壓縮包
-    FN_USER_RATING = os.path.join(PATH_DATA, 'user_ratings_in_experiments.csv')  # 實驗用戶的評分資料
-    WEB_SERVER_PORT = 8001  # 網頁伺服器的埠號
-    WEB_MODE = True  # True: 啟用網頁伺服器; False: 在文字介面直接執行程式
-
+    data_path = r'C:\Users\08156\recommander_final'
+    fn_product_path = os.path.join(data_path,'ElecNew.csv') #anazon電子產品資料
+    fn_comment_path = os.path.join(data_path,'Comments.csv') #amazon電子產品的評分資料
+    web_port = 8001  # 網頁伺服器的埠號
+    web_mode = True # True: 啟用網頁伺服器; False: 在文字介面直接執行程式
 
 class ItemDatabase:
-    genre_col_prefix = 'genre_'
 
     def __init__(self):
         self.items = None  # 稍後載入
         self.load()  # 載入物品資料庫
 
     def load(self):
-        # 從檔案載入物品的所有原始資料
+        fn_product_info = Config.fn_product_path
 
-        fn_movie_info = Config.FN_AGGR_MOVIE_INFO
-
-        if os.path.exists(fn_movie_info):
+        if os.path.exists(fn_product_info):
             try:
-                print('從', fn_movie_info, '載入電影資料。')
-                self.items = pd.read_csv(fn_movie_info)
+                print('從', fn_product_info, '載入商品資料。')
+                self.items = pd.read_csv(fn_product_info)
                 print('目前有 {:d} 筆物品資料在資料庫中。'.format(len(self.items)))
             except Exception:
-                print('嚴重錯誤：無法讀取既有的檔案。程式結束。', fn_movie_info)
+                print('嚴重錯誤：無法讀取既有的檔案。程式結束。', fn_product_info)
                 exit()
         else:
-            print('找不到', fn_movie_info, '。程式結束')
+            print('找不到', fn_product_info, '。程式結束')
             exit()
+    def get_product_by_id(self, item_id):
+        return self.items[self.items['asin'] == item_id].to_dict('records')[0]
 
-    def get_item_by_id(self, item_id):
-        # 依據一個物品編號，取得該物品的所有資料
-        # 回傳內容為一個字典，包含一筆物品的所有資料。
-        return self.items[self.items['movieId'] == item_id].to_dict('records')[0]
-
-    def get_items_by_id_list(self, item_ids):
-        # 依據特定物品編號清單，取得該物品的所有資料，並且保持原本的順序。
+    def get_product_by_id_list(self, item_ids):
         # 回傳內容為一個清單，清單中的每一個元素是一個字典，包含一筆物品的所有資料。
         result = []
         for item_id in item_ids:
-            result.append(self.get_item_by_id(item_id))
-
+            result.append(self.get_product_by_id(item_id))
         return result
 
     def get_number_of_items(self):
         # 取得資料庫裡面所有物品的總數
         return len(self.items)
 
-
 class UserHistory:
     def __init__(self):
-        self.fn_user_ratings = Config.FN_USER_RATING  # 用戶評分紀錄的存檔位置，檔名可以被用戶重新設定
-        self.fn_user_ratings_configurable = False  # 用戶評分紀錄的檔名是否可以被用戶重新設定
-        self.user_ratings = None  # 用戶評分紀錄，之後才會載入，或由用戶新增評分
-        self.user_id = None  # 本次用戶登入的身分
+        self.fn_user_rating = Config.fn_comment_path
+        self.fn_user_rating_configurable = False
+        self.user_rating = None
+        self.user_id = None
 
         self.load_or_create()
         while self.user_id is None:
             # 如果用戶沒有登入，則會一直重複詢問
             self.sign_in_or_sign_up()
-
     def load_or_create(self, allow_slicing=False):
-        # 確認檔案位置，嘗試讀取檔案，若無檔案，則嘗試載入 MovieLens 評分紀錄，或建立空白資料庫
-
-        # 如果檔名可以被用戶重新設定，則詢問用戶是否要使用預設的檔名
-        if self.fn_user_ratings_configurable:
-            response = input('用戶評分的存檔位置是在 {:s} 嗎? (Y/n)'.format(self.fn_user_ratings))
-            if response.lower() in ('n', 'no'):
-                response = input('請輸入你要使用的檔名.')
-                self.fn_user_ratings = response
-
         # 如果檔案存在，則嘗試讀取檔案
-        if os.path.exists(self.fn_user_ratings):
+        if os.path.exists(self.fn_user_rating):
             try:
-                print('讀取用戶評分資料:', self.fn_user_ratings)
-                self.user_ratings = pd.read_csv(self.fn_user_ratings)
+                print('讀取用戶評分資料:', self.fn_user_rating)
+                self.user_ratings = pd.read_csv(self.fn_user_rating)
                 return
             except Exception:
-                print('嚴重錯誤：無法讀取', self.fn_user_ratings, '。程式結束。')
+                print('嚴重錯誤：無法讀取', self.fn_user_rating, '。程式結束。')
                 exit()
-
-        print('找不到舊的用戶評分紀錄檔', self.fn_user_ratings)
-        response = input('要將 MovieLens 的用戶評分資料載入到資料庫中嗎? (Y/n)')
-        if response.lower() not in ('n', 'no'):
-            # 如果用戶沒有不同意載入 MovieLens 評分紀錄，就載入
-            self.copy_from_movielens()
+        #如果檔案不存在則載入評分資料或建立空資料庫
         else:
-            # 如果不載入 MovieLens，就建立一個空的資料庫
-            print('不載入 MovieLens。重新建立一個存放未來用戶評分的全新容器。')
-            self.user_ratings = pd.DataFrame({'userId': pd.Series(dtype='int64'),
-                                             'movieId': pd.Series(dtype='int64'),
-                                             'rating': pd.Series(dtype='float64')})
+            print('找不到舊的用戶評分紀錄檔', self.fn_user_rating)
+            response = input('要將 Amazon 的用戶評分資料載入到資料庫中嗎? (Y/n)')
+            if response.lower() not in ('n', 'no'):
+                # 如果用戶沒有不同意載入 Amazon 評分紀錄，就載入
+                self.copy_from_amazonElec()
+            else:
+                # 如果不載入 Amazon，就建立一個空的資料庫
+                print('不載入 Amazon Comment。重新建立一個存放未來用戶評分的全新容器。')
+                self.user_ratings = pd.DataFrame({'reviewerID': pd.Series(dtype='int64'),
+                                                  'asin': pd.Series(dtype='int64'),
+                                                  'overall': pd.Series(dtype='float64')})
 
         if allow_slicing and len(self.user_ratings) > 0:
-            response = input('如果要只保留最活躍的前幾個用戶和前幾名最熱門的電影，請輸入一個數量，或是直接按enter跳過:')
+            response = input('如果要只保留最活躍的前幾個用戶和前幾名最熱門的商品，請輸入一個數量，或是直接按enter跳過:')
             try:
                 # 如果輸入的是一個正整數，就只保留該數量的用戶和電影
                 if int(response) > 0:
-                    self.keep_only_active_users_and_popular_movies(int(response))
+                    self.keep_only_active_users_and_popular_electrical(int(response))
             except ValueError:
                 pass
 
-    def copy_from_movielens(self):
-        # 若有需要，可以採用 MovieLens 的用戶評分紀錄作為開始，避免資料庫一片空白
+    def copy_from_amazonElec(self):
+        # 若有需要，可以採用 Amazon 的用戶評分紀錄作為開始，避免資料庫一片空白
 
-        print('從', Config.FN_MOVIELENS_DATA, '載入 MovieLens 的用戶評分資料。')
-        with zipfile.ZipFile(Config.FN_MOVIELENS_DATA, 'r') as zf:
-            with zf.open('ml-latest-small/ratings.csv', 'r') as f:
-                self.user_ratings = pd.read_csv(f, encoding='utf8', sep=',')
+        print('從', Config.fn_comment_path, '載入 Amazon 的用戶評分資料。')
+        with open('fn_comment_path', 'r') as f:
+            self.user_ratings = pd.read_csv(f, encoding='utf8', sep=',')
 
-        self.user_ratings = self.user_ratings.loc[:, ['userId', 'movieId', 'rating']]
+        self.user_ratings = self.user_ratings.loc[:, ['reviewerID', 'asin', 'overall']]
         print('已經載入 {:d} 筆評分資料到資料庫中。'.format(len(self.user_ratings)))
 
-    def keep_only_active_users_and_popular_movies(self, k, sample_fraction=0.5):
+    def keep_only_active_users_and_popular_electrical(self, k, sample_fraction=0.5):
         # 在self.user_ratings裡面，僅保留有最多評分的k個用戶，以及這些用戶給最多評分的k個電影，並隨機抽樣某個比例的評分紀錄
         # 這個可以用來縮減資料量，加速實驗
-        print('只保留最活躍的', k, '個用戶和最熱門的', k, '個電影。並保留百分之', sample_fraction * 100, '的評分紀錄。')
+        print('只保留最活躍的', k, '個用戶和最熱門的', k, '個商品。並保留百分之', sample_fraction * 100, '的評分紀錄。')
 
         # 取得最活躍的k個用戶
-        active_users = self.user_ratings.groupby('userId').count().nlargest(k, 'movieId').index
+        active_users = self.user_ratings.groupby('reviewerID').count().nlargest(k, 'asin').index
 
         # 取得這些活躍用戶的所有評分
-        self.user_ratings = self.user_ratings[self.user_ratings['userId'].isin(active_users)]
+        self.user_ratings = self.user_ratings[self.user_ratings['reviewerID'].isin(active_users)]
 
         # 取得這些活躍用戶給最多評分的k個熱門電影
-        popular_items = self.user_ratings.groupby('movieId').count().nlargest(k, 'userId').index
+        popular_items = self.user_ratings.groupby('asin').count().nlargest(k, 'reviewerID').index
 
         # 只留下這些活躍用戶給這些熱門電影的評分，並隨機刪除一些評分紀錄，保留之後推薦的空間
-        selector = (self.user_ratings['userId'].isin(active_users)) & (self.user_ratings['movieId'].isin(popular_items))
+        selector = (self.user_ratings['reviewerID'].isin(active_users)) & (self.user_ratings['asin'].isin(popular_items))
         self.user_ratings = self.user_ratings[selector].sample(frac=sample_fraction)
 
     def show_login_message(self):
@@ -168,10 +138,9 @@ class UserHistory:
 
     def sign_in_or_sign_up(self):
         response = input('請輸入你想使用的純數字用戶編號， \n'
-                         '例如：564是喜劇片愛好者，297是驚悚片愛好者，149是科幻片愛好者，12是愛情片愛好者，571是恐怖片愛好者。\n'
                          '你也可以輸入 new 創造新用戶，或是輸入 active 使用有最多評分的帳戶：')
 
-        # 建立新用戶帳號
+        # 建立新用戶帳號 #lower是返回值
         if response.lower() == 'new':
             max_id = self.get_max_user_id()
             if max_id is None:
@@ -204,73 +173,73 @@ class UserHistory:
         return True
 
     def save_to_disk(self):
-        print('正在儲存用戶評分紀錄到檔案', self.fn_user_ratings)
-        self.user_ratings.to_csv(self.fn_user_ratings, index=False)
+        print('正在儲存用戶評分紀錄到檔案', self.fn_user_rating)
+        self.user_ratings.to_csv(self.fn_user_rating, index=False)
 
     def set_rating(self, item, rating):
         # 新增或更改目前用戶對特定物品的評分
 
         # 檢查該用戶對於該物品是否已經有評分
-        selector = (self.user_ratings['userId'] == self.user_id) & \
-                   (self.user_ratings['movieId'] == item['movieId'])
-        series = self.user_ratings.loc[selector, 'rating']
+        selector = (self.user_ratings['reviewerID'] == self.user_id) & \
+                   (self.user_ratings['asin'] == item['asin'])
+        series = self.user_ratings.loc[selector, 'overall']
 
         # 之前沒評分，直接新增
         if len(series) == 0:
-            print('新增用戶', self.user_id, '對於物品', item['title'], '的評分:', rating)
-            data_dict = {'userId': self.user_id, 'movieId': item['movieId'], 'rating': rating}
+            print('新增用戶', self.user_id, '對於物品', item['asin'], '的評分:', rating)
+            data_dict = {'reviewerID': self.user_id, 'asin': item['asin'], 'overall': rating}
             new_row = pd.DataFrame(data_dict, index=[-1])  # 索引值-1可以隨意給，因為等一下要ignore_index忽略它
             self.user_ratings = pd.concat([self.user_ratings, new_row], ignore_index=True)
 
         # 之前有一個評分，更改評分
         elif len(series) == 1:
-            print('更新用戶', self.user_id, '對於物品', item['title'], '的評分:', rating)
-            self.user_ratings.loc[selector, 'rating'] = rating
+            print('更新用戶', self.user_id, '對於物品', item['asin'], '的評分:', rating)
+            self.user_ratings.loc[selector, 'overall'] = rating
 
         # 其他狀況
         else:
-            print('警告：用戶', self.user_id, '對於物品', item['title'], '有超過一筆評分，放棄更新評分')
+            print('警告：用戶', self.user_id, '對於物品', item['asin'], '有超過一筆評分，放棄更新評分')
 
     def get_top_rated_items(self, k):
-        # 取得用戶最喜歡的n個物品，回傳前k個movieId清單
+        # 取得用戶最喜歡的n個物品，回傳前k個amazon商品清單
 
         # 取得用戶的評分
-        user_ratings = self.user_ratings[self.user_ratings['userId'] == self.user_id]
+        user_ratings = self.user_ratings[self.user_ratings['reviewerID'] == self.user_id]
 
         # 取得用戶評分最高的n個物品
         user_ratings = user_ratings.sort_values(by='rating', ascending=False)
 
-        # 僅回傳movieId清單
-        return user_ratings['movieId'].head(k).tolist()
+        # 僅回傳商品asin清單
+        return user_ratings['asin'].head(k).tolist()
 
     def get_user_rating(self, item):
         # 取得用戶對於特定物品的評分
 
-        selector = (self.user_ratings['userId'] == self.user_id) & (self.user_ratings['movieId'] == item['movieId'])
-        series = self.user_ratings.loc[selector, 'rating']
+        selector = (self.user_ratings['reviewerID'] == self.user_id) & (self.user_ratings['asin'] == item['asin'])
+        series = self.user_ratings.loc[selector, 'overall']
 
         if len(series) == 0:
             return None
         elif len(series) == 1:
             return series.item()
         else:
-            print('警告：用戶', self.user_id, '對於物品', item['title'], '有超過一筆評分')
+            print('警告：用戶', self.user_id, '對於物品', item['asin'], '有超過一筆評分')
             return None
 
     def get_rating_count(self):
         # 取得當前用戶的評分筆數
-        return len(self.user_ratings[self.user_ratings['userId'] == self.user_id])
+        return len(self.user_ratings[self.user_ratings['reviewerID'] == self.user_id])
 
     def get_max_user_id(self):
         # 取得最大的用戶編號。加一之後可以作為新用戶的編號
         if len(self.user_ratings) == 0:
             return None
         else:
-            return self.user_ratings['userId'].max()
+            return self.user_ratings['reviewerID'].max()
 
     def get_most_active_user_id(self):
         # 取得有最多評分紀錄的用戶
-        ratings_per_user = self.user_ratings.groupby('userId')['rating']
+        ratings_per_user = self.user_ratings.groupby('reviewerID')['overall'] #這邊的語法是啥意思
         count_ratings_per_user = ratings_per_user.count()
 
         if len(count_ratings_per_user) == 0:
@@ -279,24 +248,25 @@ class UserHistory:
         # 取得用戶編號最大值的索引值
         user_id_with_most_ratings = count_ratings_per_user.idxmax()
         print('最活躍的用戶編號是', user_id_with_most_ratings, '，具有',
-              len(self.user_ratings[self.user_ratings['userId'] == user_id_with_most_ratings]), '個評分紀錄。')
+              len(self.user_ratings[self.user_ratings['reviewerID'] == user_id_with_most_ratings]), '個評分紀錄。')
 
         return user_id_with_most_ratings
 
     def get_number_of_users(self):
         # 取得用戶數量
-        return len(self.user_ratings['userId'].unique())
+        return len(self.user_ratings['reviewerID'].unique())
 
-    def purge_ratings_for_unlisted_movies(self, item_database):
+    #做到這邊
+    def purge_ratings_for_unlisted_product(self, item_database):
         # 刪除用戶評分紀錄中，沒有在item_database中的電影的評分紀錄
         # 由於電影資料在清理與整合過程中，可能會刪除一些原有的資料，因此對應的評分資料也需要刪除
 
         print('刪除用戶評分紀錄中，沒有在item_database中的電影的評分紀錄，目前有', len(self.user_ratings), '筆評分紀錄。')
-        # 取得所有電影的movieId
-        movie_ids = item_database.items['movieId'].tolist()
+        # 取得所有的asin
+        product_asin = item_database.items['asin'].tolist()
 
         # 刪除用戶評分紀錄中，沒有在item_database中的電影的評分紀錄
-        self.user_ratings = self.user_ratings[self.user_ratings['movieId'].isin(movie_ids)]
+        self.user_ratings = self.user_ratings[self.user_ratings['asin'].isin(product_asin)]
         print('刪除後的用戶評分紀錄數量：', len(self.user_ratings))
 
     def get_number_of_ratings(self):
@@ -311,25 +281,26 @@ class UserHistory:
             user_id = self.user_id
 
         # 取得用戶的評分紀錄
-        selector = (self.user_ratings['userId'] == user_id)
-        user_ratings = self.user_ratings.loc[selector, ['movieId', 'rating']]
+        selector = (self.user_ratings['reviewerID'] == user_id)
+        user_ratings = self.user_ratings.loc[selector, ['asin', 'overall']]
 
+        #這個待改
         # 取得所有電影類別欄位
-        col_genres = item_database.items.columns[item_database.items.columns.str.startswith(item_database.genre_col_prefix)]
+        col_genres = item_database.items.columns[
+            item_database.items.columns.str.startswith(item_database.genre_col_prefix)]
 
+        #這個待改
         # 取得用戶評分過的電影的類型分佈
-        items = item_database.items[['movieId'] + col_genres.tolist()]
-        items = items.merge(user_ratings, on='movieId', how='inner')
+        items = item_database.items[['asin'] + col_genres.tolist()]
+        items = items.merge(user_ratings, on='asin', how='inner')
 
-        # 欄位名稱去除prefix
-        items.columns = [c.replace(item_database.genre_col_prefix, '') for c in items.columns]
-        col_genres = [c.replace(item_database.genre_col_prefix, '') for c in col_genres]
-
+        # 這邊待改
         # 計算用戶評分過的電影的類型分佈
         user_genre_preference = {}
         for genre in col_genres:
-            user_genre_preference[genre] = items[items[genre] == 1]['rating'].sum()
+            user_genre_preference[genre] = items[items[genre] == 1]['overall'].sum()
 
+        #這邊待改
         # 進行正規化，讓偏好分數總合為1
         total = sum(user_genre_preference.values())
         if total > 0:
@@ -345,7 +316,7 @@ class UserHistory:
         print('取得最專注的用戶，也就是評分過的電影的類型分佈最集中的用戶。')
 
         # 依照用戶評分數量排序，只看評分數量較少的用戶
-        ratings_per_user = self.user_ratings.groupby('userId')['rating']
+        ratings_per_user = self.user_ratings.groupby('reviewerID')['overall']
         count_ratings_per_user = ratings_per_user.count()
         count_ratings_per_user.sort_values(ascending=True, inplace=True)
         user_ids = count_ratings_per_user.index[len(count_ratings_per_user) // 10:]
@@ -354,19 +325,21 @@ class UserHistory:
         user_genre_preferences = []
         for user_id in user_ids:
             user_genre_preference = self.get_user_genre_preference(item_database, user_id)
-            user_genre_preference['userId'] = user_id
+            user_genre_preference['reviewerID'] = user_id
             user_genre_preferences.append(user_genre_preference)
 
         # 將user_genre_preferences轉換成DataFrame，並將索引設定為userId
         user_genre_preference_dataframe = pd.DataFrame(user_genre_preferences)
-        user_genre_preference_dataframe.set_index('userId', inplace=True)
+        user_genre_preference_dataframe.set_index('reviewerID', inplace=True)
 
+        #待改
         def entropy(row):
             # 依照單一用戶對於電影類型偏好的分布，用entropy計算impurity
             return -sum([p * math.log(p) if p > 0 else 0 for p in row if not math.isnan(p)])
 
         # 依照表格內容，計算impurity，並將結果加入到user_genre_preference_dataframe
-        user_genre_preference_dataframe['entropy'] = user_genre_preference_dataframe.apply(lambda row: entropy(row), axis=1)
+        user_genre_preference_dataframe['entropy'] = user_genre_preference_dataframe.apply(lambda row: entropy(row),
+                                                                                           axis=1)
 
         # 依照entropy排序
         user_genre_preference_dataframe.sort_values(by='entropy', ascending=True, inplace=True)
@@ -381,194 +354,6 @@ class UserHistory:
         # 回傳排序後的用戶清單
         return user_genre_preference_dataframe.index.tolist()
 
-class Drawing:
-    def __init__(self, item_database: ItemDatabase, user_history: UserHistory):
-        self.items = item_database.items  # 所有物品的資料
-        self.user_ratings = user_history.user_ratings  # 所有用戶的評分資料
-        self.user_history = user_history  # 用戶的歷史紀錄
-
-    def draw_user_ratings_histogram(self):
-        # 本函式的目的是繪製用戶評分過的電影的綜合評分分佈
-
-        # 取得用戶的評分紀錄
-        selector = (self.user_ratings['userId'] == self.user_history.user_id)
-        user_ratings = self.user_ratings.loc[selector, ['rating']]
-
-        print('將用戶的評分紀錄畫成圖')
-        sns.histplot(data=user_ratings, x='rating')
-        fn_out = 'rs_user_{:d}_rating_hist.png'.format(self.user_history.user_id)
-        plt.title('Ratings given by user {:d}'.format(self.user_history.user_id))
-        plt.savefig(fn_out, bbox_inches='tight')
-        plt.clf()
-
-    def draw_user_genre_counting(self):
-        # 本函式的目的是繪製用戶評分過的電影的分類數量
-
-        # 該用戶評價過的所有電影名單
-        selector = (self.user_ratings['userId'] == self.user_history.user_id)
-        movie_id_list = self.user_ratings.loc[selector, 'movieId'].tolist()
-
-        # 取得電影的分類
-        cols = self.items.columns.values.tolist()
-        genre_cols = [c for c in cols if c.startswith(ItemDatabase.genre_col_prefix)]
-
-        # 計算該用戶評價過的電影在各電影類型的數量
-        genres = self.items.loc[self.items['movieId'].isin(movie_id_list), genre_cols]
-        cnt_genres = genres.sum(axis=0)
-
-        print('將用戶的對於各類電影的評分數量畫成圖')
-        sns.barplot(x=cnt_genres.values, y=cnt_genres.index)
-        plt.title('Number of movie genres rated by user {:d}'.format(self.user_history.user_id))
-        fn_out = 'rs_user_{:d}_cnt_genres.png'.format(self.user_history.user_id)
-        plt.savefig(fn_out, bbox_inches='tight')
-        plt.clf()
-
-    def draw_user_genre_rating_distribution(self):
-        # 本函式的目的是繪製用戶對於各類型電影的評分狀況
-
-        # 將用戶對於各類電影的評分畫成箱型圖
-        selector = (self.user_ratings['userId'] == self.user_history.user_id)
-        movie_ratings = self.user_ratings.loc[selector, ['movieId', 'rating']]  # 該用戶給的所有電影評分
-
-        movie_id_list = movie_ratings.loc[:, 'movieId'].tolist()  # 該用戶評價過的所有電影名單
-        selector = self.items['movieId'].isin(movie_id_list)
-        cols = self.items.columns.values.tolist()
-        genre_cols = [c for c in cols if c.startswith(ItemDatabase.genre_col_prefix)]  # 所有電影分類的欄位
-        genre_indicator = self.items.loc[selector, ['movieId'] + genre_cols]  # 該用戶評價過的電影的所有分類欄位
-
-        movie_ratings = pd.merge(movie_ratings, genre_indicator, on='movieId')  # 合併，評分一行，各分類一行
-
-        ratings_for_genres = []
-        for col in genre_cols:
-            series = movie_ratings.loc[movie_ratings[col] == True, 'rating'].tolist()
-            ratings_for_genres.append(series)
-
-        print('將用戶在各電影分類的評分畫成箱型圖')
-        ax = sns.boxplot(data=ratings_for_genres, orient="h")
-        ax.set_yticklabels(genre_cols)
-        plt.title('User {:d}\' ratings for various movies'.format(self.user_history.user_id))
-        fn_out = 'rs_user_{:d}_genres_boxplot.png'.format(self.user_history.user_id)
-        plt.savefig(fn_out, bbox_inches='tight')
-        plt.clf()
-
-
-class Algorithm:
-    @classmethod
-    def user_similarity(cls, user_ratings):
-        # 本函式的目的是計算用戶之間的相似度，基於用戶的協同過濾會用到
-        # 計算用戶相似度的方法有很多，這裡使用的是Pearson correlation coefficient
-        # 這裡的user_ratings是一個DataFrame，有3個欄位，分別是userId, movieId, rating
-        # 這裡的userId是用戶的id，movieId是電影的id，rating是用戶對電影的評分
-        rating_matrix = user_ratings.pivot(index='userId', columns='movieId', values='rating')
-
-        # 計算用戶相似度前，先將每個用戶的評分減去評分的平均值
-        rating_matrix = rating_matrix.subtract(rating_matrix.mean(axis=1), axis='rows')
-
-        # 轉置矩陣，把每個用戶的評分變成直行，再對每個直行兩兩之間計算 Pearson correlation
-        # 也可以用scipy.stats.pearsonr，例如計算編號0和編號3的用戶就用pearsonr(df.loc[0], df.loc[3])
-        user_similarity_pearson = rating_matrix.T.corr(method='pearson')
-
-        return user_similarity_pearson
-
-    @classmethod
-    def top_k_similar_users(cls, user_ratings, target_user, k, similarity_threshold=0.3):
-        # 本函式的目的是找出和target_user最相似的k個用戶，基於用戶的協同過濾會用到
-
-        # 計算用戶相似度
-        user_similarity = cls.user_similarity(user_ratings)
-
-        if target_user not in user_similarity.index:
-            print('用戶 {:d} 目前沒有評分紀錄，無法找到與其最相似的用戶'.format(target_user))
-            return None
-
-        # 移除自己這一列，要找的是鄰居，不是自己
-        user_similarity.drop(index=target_user, inplace=True)
-
-        # 選擇在user_id這一行的相似度分數高於閥值的所有用戶列們(他們和target_user的相似度高於閥值)
-        threshold_selector = user_similarity.loc[:, target_user] > similarity_threshold
-        similar_users = user_similarity.loc[threshold_selector, target_user]  # 把他們和target_user的相似度挑出來(搭配他們的index)
-
-        # 將相似度Series的名稱改成similarity
-        similar_users.rename('similarity', inplace=True)
-
-        # 排序，相似度高的在前面，只取前k個相似度最大的用戶
-        similar_users = similar_users.sort_values(ascending=False)
-        similar_users = similar_users[:k]
-
-        # 回傳相似度最高的k個用戶，index是這些用戶的userId，value是這些用戶和target_user的相似度
-        return similar_users
-
-    @classmethod
-    def unseen_movies(cls, user_ratings, target_user):
-        # 找出target_user沒看過的電影，只能從這些電影推薦
-
-        target_user_ratings = user_ratings.loc[user_ratings['userId'] == target_user, ['movieId', 'rating']]
-        target_user_watched_movies = target_user_ratings['movieId'].tolist()
-        selector = ~user_ratings['movieId'].isin(target_user_watched_movies)
-        movies_to_recommend = user_ratings.loc[selector, 'movieId'].unique()
-        return movies_to_recommend
-
-    @classmethod
-    def user_based_collaborative_filtering(cls, user_ratings, target_user, num_recommend, n_similar_users=60, similarity_threshold=0.5):
-        # 基於用戶的協同過濾，推薦給target_user的電影
-        # 1. 找到和target_user最相似的k個用戶
-        print('正在尋找與用戶 {:d} 最相似的 {:d} 位用戶...'.format(target_user, n_similar_users))
-        similar_users = cls.top_k_similar_users(user_ratings, target_user, n_similar_users, similarity_threshold)
-
-        if similar_users is None or len(similar_users) == 0:
-            print('找不到與用戶 {:d} 最相似的用戶'.format(target_user))
-            return pd.DataFrame()  # 回傳空的DataFrame，代表找不到推薦的電影
-
-        # 2. 找到target_user沒看過的電影
-        print('正在尋找用戶 {:d} 沒看過的電影...'.format(target_user))
-        movies_to_recommend = cls.unseen_movies(user_ratings, target_user)
-
-        # 3. 找到和target_user最相似的k個用戶對這些電影的評分
-        print('正在尋找與用戶 {:d} 最相似的 {:d} 位用戶對這些電影的評分...'.format(target_user, n_similar_users))
-        similar_users_ratings = user_ratings.loc[user_ratings['userId'].isin(similar_users.index), :]
-        similar_users_ratings = similar_users_ratings.loc[similar_users_ratings['movieId'].isin(movies_to_recommend), :]
-
-        # 4.1. 進行評分的正規化，先計算該用戶平均評分
-        similar_users_ratings['user_mean'] = similar_users_ratings.groupby('userId')['rating'].transform('mean')
-        # 4.2. 評分減去該用戶平均評分，獲得每個用戶對電影的超額給分
-        similar_users_ratings['rating'] = similar_users_ratings['rating'] - similar_users_ratings['user_mean']
-        # 4.3. 移除用不到的欄位
-        similar_users_ratings.drop(columns=['user_mean'], inplace=True)
-
-        # 5. 用這些用戶與target_user的相似度，對於電影評分加權
-        similar_users_ratings = similar_users_ratings.merge(similar_users, left_on='userId', right_index=True)
-        similar_users_ratings['weighted_rating'] = similar_users_ratings['rating'] * similar_users_ratings['similarity']
-
-        # 6. 取得電影的加權平均分
-        movie_ratings = similar_users_ratings.groupby('movieId')['weighted_rating'].sum() / similar_users_ratings.groupby('movieId')['similarity'].sum()
-
-        # 7. 排序，分數高的在前面
-        movie_ratings = movie_ratings.sort_values(ascending=False)
-
-        # 8. 回傳推薦結果，index是電影的movieId，value是電影的推薦分數
-        return movie_ratings[:num_recommend]
-
-    @classmethod
-    def popularity_based_recommendation(cls, user_ratings, target_user, num_recommend):
-        # 依照電影的熱門度推薦，評分總和最高的優先推薦，也可以用其他方式定義熱門度
-        # 這裡的user_ratings是一個DataFrame，有3個欄位，分別是userId, movieId, rating
-        # 這裡的userId是用戶的id，movieId是電影的id，rating是用戶對電影的評分
-
-        # 找出target_user沒看過的電影
-        movies_to_recommend = cls.unseen_movies(user_ratings, target_user)
-
-        # 計算這些電影的評分總和
-        movie_rating_sum = user_ratings.loc[user_ratings['movieId'].isin(movies_to_recommend), ['movieId', 'rating']]
-        movie_rating_sum = movie_rating_sum.groupby('movieId').sum()
-        movie_rating_sum.rename(columns={'rating': 'rating_sum'}, inplace=True)
-
-        # 排序，評分總和最高的在前面，只取前num_recommend個
-        movie_rating_sum = movie_rating_sum.sort_values(by='rating_sum', ascending=False)
-        movie_rating_sum = movie_rating_sum[:num_recommend]
-
-        # 回傳評分總和最高的num_recommend個電影，index是這些電影的movieId，value是這些電影的評分總和
-        return movie_rating_sum
-
 
 class RecommenderSim:
     def __init__(self, num_recommend=20):
@@ -580,22 +365,12 @@ class RecommenderSim:
         self.user_history = UserHistory()  # 使用者評分紀錄，以當前用戶身分進行新增、查詢、修改
         self.item_database = ItemDatabase()  # 物品資料庫，唯讀
 
-        self.user_history.purge_ratings_for_unlisted_movies(self.item_database)  # 清除資料庫中沒有的電影評分
-        self.drawing = Drawing(self.item_database, self.user_history)  # 繪製用戶行為統計資料的圖表
+        self.user_history.purge_ratings_for_unlisted_product(self.item_database)  # 清除資料庫中沒有的電影評分
 
         # self.user_history.get_most_focused_users(self.item_database)  # 取得最專注的用戶
 
     def update_item_features(self):
         print('正在更新物品內容特徵資料庫')
-        pass
-
-    def update_user_profile(self):
-        print('更新用戶偏好模型')
-
-        # 繪製相關圖表
-        self.drawing.draw_user_ratings_histogram()
-        self.drawing.draw_user_genre_counting()
-        self.drawing.draw_user_genre_rating_distribution()
         pass
 
     def refresh_recommendation(self, method='popular'):
@@ -606,18 +381,18 @@ class RecommenderSim:
             print('使用基於用戶的協同過濾推薦物品')
             self.last_recommendation = Algorithm.user_based_collaborative_filtering(
                 self.user_history.user_ratings, self.user_history.user_id, self.num_recommend)
-            self.last_recommendation = self.item_database.get_items_by_id_list(self.last_recommendation.index)
+            self.last_recommendation = self.item_database.get_product_by_id_list(self.last_recommendation.index)
 
         if len(self.last_recommendation) == 0 or method == 'popular':
             print('推薦熱門物品')
             self.last_recommendation = Algorithm.popularity_based_recommendation(
                 self.user_history.user_ratings, self.user_history.user_id, self.num_recommend)
-            self.last_recommendation = self.item_database.get_items_by_id_list(self.last_recommendation.index)
+            self.last_recommendation = self.item_database.get_product_by_id_list(self.last_recommendation.index)
 
     def show_items(self, k_favorite=20):
         # 取得用戶對於不同電影類型的偏好，並將結果儲存到 genre_preference 變數中，該變數為一個字典，其中的鍵為電影類型，值為偏好
         genre_preference = rec.user_history.get_user_genre_preference(rec.item_database)
-        # 將 genre_preference 變數中的電影類型依照偏好由大到小排序
+        # 將 genre_preference 變數中的商品類型依照偏好由大到小排序
         genre_preference = sorted(genre_preference.items(), key=lambda x: x[1], reverse=True)
         print('你最喜歡的電影類型是:')
         print('電影類型 偏好')
@@ -631,15 +406,15 @@ class RecommenderSim:
         print('編號 評分 物品標題')
 
         # 依照用戶的評分排序，評分高的在前面，取得用戶最喜歡的前k個物品
-        favorite_movieIds = self.user_history.get_top_rated_items(k_favorite)
-        favorite_items = self.item_database.get_items_by_id_list(favorite_movieIds)
+        favorite_asin = self.user_history.get_top_rated_items(k_favorite)
+        favorite_items = self.item_database.get_product_by_id_list(favorite_asin)
 
         # 顯示用戶最喜歡的物品
         print('-' * 60)
         for serial, item in enumerate(favorite_items):
             rating = self.user_history.get_user_rating(item)
             rating = '[?.?]' if rating is None else '[{:.1f}]'.format(rating)
-            print('{:d}.'.format(serial), rating, item['title'], item['movieId'])
+            print('{:d}.'.format(serial), rating, item['title'], item['asin'])
         print('-' * 60)
 
         print('推薦以下物品給你:')
@@ -650,7 +425,7 @@ class RecommenderSim:
         for serial, item in enumerate(self.last_recommendation):
             rating = self.user_history.get_user_rating(item)
             rating = '[?.?]' if rating is None else '[{:.1f}]'.format(rating)
-            print('{:d}.'.format(serial), rating, item['title'], item['movieId'])
+            print('{:d}.'.format(serial), rating, item['title'], item['asin'])
         print('-' * 60)
 
     def get_user_feedback(self):
@@ -730,13 +505,12 @@ class RecommenderSim:
         self.user_history.save_to_disk()
         print('系統正常結束。')
 
-
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     # 用來處理HTTP請求的類別，並覆寫了一些方法，以便處理我們的請求，並回應我們的網頁
 
     KEY_RATING_PREFIX = 'rating_'  # 用戶對於物品的評分
     KEY_SWITCH_USER = 'switch_user'  # 用戶選擇切換用戶
-    TMDB_IMG_BASE_URL = 'https://image.tmdb.org/t/p/w440_and_h660_face'
+    #TMDB_IMG_BASE_URL = 'https://image.tmdb.org/t/p/w440_and_h660_face'
     # 用戶對於物品的評分, float32, 0~5, 0.5為單位
     VALID_RATINGS = (0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5)
 
@@ -745,7 +519,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write('<html><head>'.encode('utf-8'))
         self.wfile.write(
             '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />'.encode('utf-8'))
-        self.wfile.write('<title>電影推薦系統實驗平台</title>'.encode('utf-8'))
+        self.wfile.write('<title>Amazon商品推薦實驗平台</title>'.encode('utf-8'))
 
         # 設定網頁的字型為微軟正黑體，並設定表格的樣式，以便網頁看起來更好看，也更容易閱讀，而不是使用瀏覽器預設的樣式
         self.wfile.write('<style>'.encode('utf-8'))
@@ -760,11 +534,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write('</style>'.encode('utf-8'))
 
         # 設定網頁的圖示為電影的圖示
-        self.wfile.write('<link rel=icon href=https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6/svgs/solid/film.svg>'.encode('utf-8'))
         self.wfile.write('</head><body>'.encode('utf-8'))
 
         # 顯示網頁的標題
-        self.wfile.write('<h1>電影推薦系統實驗平台</h1>'.encode('utf-8'))
+        self.wfile.write('<h1>Amazon商品推薦實驗平台</h1>'.encode('utf-8'))
 
         # 顯示目前資料庫中的資料數量
         n_users = rec.user_history.get_number_of_users()
@@ -776,11 +549,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def show_page_footer(self):
         # 顯示頁尾
         self.wfile.write('<hr>'.encode('utf-8'))
-        self.wfile.write('<p>本系統由 <a href="https://linjiun.github.io/" target="blank">Linjiun Tsai</a> 製作，'
-                         '所有電影相關資料取自TMDB、IMDB及MovieLens網站，版權歸原作者。</p>'.encode('utf-8'))
+        self.wfile.write('<p>本系統由 <a href="https://github.com/JoyWannn" target="blank">Joy Wan</a> 製作，'
+                         '所有商品相關資料取自Amazon網站，版權歸原作者。</p>'.encode('utf-8'))
         self.wfile.write('</body></html>'.encode('utf-8'))
 
-    # 顯示用戶對於不同電影類型的偏好
+    # 顯示用戶對於不同商品類型的偏好
     def show_user_genre_preference(self, n_cols=6):
         # 取得用戶對於不同電影類型的偏好，並將結果儲存到 genre_preference 變數中，該變數為一個字典，其中的鍵為電影類型，值為偏好
         genre_preference = rec.user_history.get_user_genre_preference(rec.item_database)
@@ -789,14 +562,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         genre_preference = sorted(genre_preference.items(), key=lambda x: x[1], reverse=True)
 
         # 顯示用戶對於不同電影類型的偏好，一行最多顯示 n_cols 個類別
-        self.wfile.write('<h2>用戶 {} 共有 {} 個評分紀錄，對於不同電影類型的偏好比例</h2>'.format(
+        self.wfile.write('<h2>用戶 {} 共有 {} 個評分紀錄，對於不同商品類型的偏好比例</h2>'.format(
             rec.user_history.user_id, rec.user_history.get_rating_count()).encode('utf-8'))
         self.wfile.write('<table>'.encode('utf-8'))
 
         # 顯示表格的標題
         self.wfile.write('<tr>'.encode('utf-8'))
         for i in range(0, n_cols):
-            self.wfile.write('<th>電影類型</th><th>偏好</th>'.encode('utf-8'))
+            self.wfile.write('<th>商品類型</th><th>偏好</th>'.encode('utf-8'))
         self.wfile.write('</tr>'.encode('utf-8'))
 
         for i in range(0, len(genre_preference), n_cols):  # 每個橫列，最多顯示六個電影類型
@@ -810,39 +583,37 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def show_top_rated_movies(self):
         # 取得用戶最喜歡的物品編號清單，以及這些物品的詳細資訊
-        top_rated_movie_id_list = rec.user_history.get_top_rated_items(rec.num_recommend)
-        top_rated_items = rec.item_database.get_items_by_id_list(top_rated_movie_id_list)
+        top_rated_product_id_list = rec.user_history.get_top_rated_items(rec.num_recommend)
+        top_rated_items = rec.item_database.get_product_by_id_list(top_rated_product_id_list)
 
         # 顯示用戶對於不同電影類型的偏好
         self.show_user_genre_preference()
 
-        self.wfile.write('<h2>用戶 {} 最喜歡的電影</h2>'.format(rec.user_history.user_id).encode('utf-8'))
+        self.wfile.write('<h2>用戶 {} 最喜歡的商品</h2>'.format(rec.user_history.user_id).encode('utf-8'))
         self.wfile.write('<table>'.encode('utf-8'))
 
         # 如果用戶沒有評分紀錄，則顯示「無」，否則顯示表格的標題
         if len(top_rated_items) > 0:
             self.wfile.write(
-                '<tr><th></th><th>評分</th><th width=90>標題</th><th>圖片</th><th>簡介</th></tr>'.encode('utf-8'))
+                '<tr><th></th><th>評分</th><th width=90>標題</th><th>簡介</th></tr>'.encode('utf-8'))
         else:
             self.wfile.write('<tr><td>無</td></tr>'.encode('utf-8'))
 
-        # 逐筆顯示用戶最喜歡的物品的詳細資訊，包括編號、評分、標題、圖片、簡介，以及用戶對這些物品的評分，以便用戶可以修改評分
-        for i, movie in enumerate(top_rated_items):
-            user_rating = rec.user_history.get_user_rating(movie)
+        # 逐筆顯示用戶最喜歡的物品的詳細資訊，包括編號、評分、標題、簡介，以及用戶對這些物品的評分，以便用戶可以修改評分
+        for i, product in enumerate(top_rated_items):
+            user_rating = rec.user_history.get_user_rating(product)
             self.wfile.write('<tr><td>#{}</td><td>'.format(i).encode('utf-8'))
-            self.wfile.write('<select name="{}{}">'.format(self.KEY_RATING_PREFIX, movie['movieId']).encode('utf-8'))
+            self.wfile.write('<select name="{}{}">'.format(self.KEY_RATING_PREFIX, product['asin']).encode('utf-8'))
             self.wfile.write('<option value=""></option>'.encode('utf-8'))
             for j in self.VALID_RATINGS:
                 selected = ' selected' if j == user_rating else ''
                 self.wfile.write('<option value="{}"{}>{}</option>'.format(j, selected, j).encode('utf-8'))
             self.wfile.write('</select>'.encode('utf-8'))
             self.wfile.write('</td>'.encode('utf-8'))
+            #網址要再改
             self.wfile.write('<td><a href="https://www.themoviedb.org/movie/{}" target="_blank">{}</a></td>'.format(
-                movie['tmdbId'], movie['title']).encode('utf-8'))
-            self.wfile.write(
-                '<td>{}</td>'.format('<img src="' + self.TMDB_IMG_BASE_URL + movie['poster_path'] + '" width=60/>').encode(
-                    'utf-8'))
-            self.wfile.write('<td>{}</td>'.format(movie['overview']).encode('utf-8'))
+                product['asin'], product['title']).encode('utf-8'))
+            self.wfile.write('<td>{}</td>'.format(product['description']).encode('utf-8'))
             self.wfile.write('</tr>'.encode('utf-8'))
         self.wfile.write('</table>'.encode('utf-8'))
 
@@ -860,22 +631,22 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write('<tr><td>無</td></tr>'.encode('utf-8'))
 
         # 逐筆顯示推薦清單的詳細資訊，包括編號、評分、標題、圖片、簡介，以及用戶對這些物品的評分，以便用戶可以修改評分
-        for i, movie in enumerate(rec.last_recommendation):
+        for i, product in enumerate(rec.last_recommendation):
             self.wfile.write('<tr><td>#{}</td><td>'.format(i).encode('utf-8'))
-            self.wfile.write('<select name="{}{}">'.format(self.KEY_RATING_PREFIX, movie['movieId']).encode('utf-8'))
+            #這邊是評分區
+            self.wfile.write('<select name="{}{}">'.format(self.KEY_RATING_PREFIX, product['asin']).encode('utf-8'))
+
             self.wfile.write('<option value=""></option>'.encode('utf-8'))
-            user_rating = rec.user_history.get_user_rating(movie)
+            user_rating = rec.user_history.get_user_rating(product)
             for j in self.VALID_RATINGS:
                 selected = ' selected' if j == user_rating else ''
                 self.wfile.write('<option value="{}"{}>{}</option>'.format(j, selected, j).encode('utf-8'))
             self.wfile.write('</select>'.encode('utf-8'))
             self.wfile.write('</td>'.encode('utf-8'))
+            # 網址要再改
             self.wfile.write('<td><a href="https://www.themoviedb.org/movie/{}" target="_blank">{}</a></td>'.format(
-                movie['tmdbId'], movie['title']).encode('utf-8'))
-            self.wfile.write(
-                '<td>{}</td>'.format('<img src="' + self.TMDB_IMG_BASE_URL + movie['poster_path'] + '" width=60/>').encode(
-                    'utf-8'))
-            self.wfile.write('<td>{}</td>'.format(movie['overview']).encode('utf-8'))
+                product['asin'], product['title']).encode('utf-8'))
+            self.wfile.write('<td>{}</td>'.format(product['overview']).encode('utf-8'))
             self.wfile.write('</tr>'.encode('utf-8'))
         self.wfile.write('</table>'.encode('utf-8'))
 
@@ -924,7 +695,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         # 顯示頁尾
         self.show_page_footer()
 
-    def do_GET(self):
+    def do_GET(self, web=None):
         print('收到HTTP GET請求，路徑是', self.path)
         # 依據路徑的不同，顯示不同的頁面
 
@@ -937,6 +708,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
             rec.update_item_features()  # 更新物品特徵資料庫
             rec.refresh_recommendation(method='user_based')  # 更新推薦清單
+            #rec.refresh_recommendation(method= 'item_based') #待用
 
             # 設定HTTP回應的狀態碼、標頭和內容類型
             self.send_response(200)
@@ -1005,7 +777,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 if key.startswith(self.KEY_RATING_PREFIX):
                     # 例如：rating_1=4.5，則取出1，並將評分4.5設定給movie_id=1的電影
                     movie_id = int(key[len(self.KEY_RATING_PREFIX):])
-                    movie_rated = rec.item_database.get_item_by_id(movie_id)
+                    movie_rated = rec.item_database.get_product_by_id(movie_id)
                     rec.user_history.set_rating(movie_rated, float(value))
 
             # 將用戶的評分紀錄存檔
@@ -1054,6 +826,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write('<p>已經切換用戶為{}</p>'.format(rec.user_history.user_id).encode('utf-8'))
             # 提示用戶還有其他用戶帳號可選
             self.wfile.write('<p>你也可以選擇以下範例用戶帳號：<br>'.encode('utf-8'))
+            #這邊要修正範例用戶
             self.wfile.write('564是喜劇片愛好者，297是驚悚片愛好者，149是科幻片愛好者，12是愛情片愛好者，571是恐怖片愛好者。</p>'.encode('utf-8'))
             self.wfile.write('<p><a href="/"><input type="button" value="回到首頁" /></a></p>'.encode('utf-8'))
 
@@ -1069,16 +842,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write('<p>你走錯地方了(404)</p>'.encode('utf-8'))
             self.wfile.write('<p><a href="/"><input type="button" value="回到首頁" /></a></p>'.encode('utf-8'))
             self.wfile.write('</body></html>'.encode('utf-8'))
-
-
-class HTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    # 這個類別是為了讓HTTPServer可以在執行時，按下Ctrl+C可以正常停止
-    def __init__(self, server_address, RequestHandlerClass):
-        http.server.HTTPServer.__init__(self, server_address, RequestHandlerClass)
-        self.daemon_threads = True
-        self.allow_reuse_address = True
-
-
 class Web:
     # 這個類別是為了啟動Web伺服器，並在伺服器停止時，關閉Python程式，方便在命令列中執行，而不是在IDE中執行
     def __init__(self):
@@ -1086,7 +849,7 @@ class Web:
 
     def start_server(self):
         # 啟動Web伺服器，並在伺服器停止時，關閉Python程式
-        self.server = HTTPServer(('localhost', Config.WEB_SERVER_PORT), RequestHandler)
+        self.server = http.HTTPServer(('localhost', Config.WEB_SERVER_PORT), RequestHandler)
         print('網頁伺服器已經啟動，請開啟瀏覽器，輸入網址 http://localhost:{}/'.format(Config.WEB_SERVER_PORT))
         print('按下Ctrl+C可以停止伺服器')
         self.server.serve_forever()
@@ -1111,3 +874,4 @@ if __name__ == '__main__':
         web.start_server()
 
     print('程式結束')
+# See PyCharm help at https://www.jetbrains.com/help/pycharm/
